@@ -1,0 +1,22 @@
+[project]
+name = "capstone-langchain-foundry"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Dyn-RayanEncarnacion", email = "Rayan.Encarnacion@Dynata.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "azure-identity>=1.25.3",
+    "fastapi>=0.141.1",
+    "langchain-core>=1.5.4",
+    "langchain-openai>=1.5.0",
+    "pydantic>=2.13.4",
+    "python-dotenv>=1.2.2",
+    "uvicorn[standard]>=0.52.3",
+]
+
+# Application, not a library: uv only manages the venv + deps (no build step).
+[tool.uv]
+package = false
