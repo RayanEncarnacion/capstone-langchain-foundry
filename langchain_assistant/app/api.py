@@ -1,0 +1,57 @@
+"""FastAPI application exposing POST /chat.
+
+Flow: request JSON -> ChatRequest -> direct Foundry model call ->
+ChatResponse (validated) -> typed JSON back to the client.
+
+No RAG, no tools, no memory in this phase.
+"""
+
+import uuid
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+
+from .agent import ask, build_chat_model, settings
+from .schemas import ChatRequest, ChatResponse
+
+# Built once at startup so we reuse the same client across requests.
+_chat_model = None
+
+
+# Lifespan handler: modern replacement for @app.on_event("startup").
+# Code before `yield` runs at boot; code after would run at shutdown.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan handler for the FastAPI app."""
+    
+    global _chat_model
+    settings.require()  # crash early if endpoint/deployment are missing.
+    _chat_model = build_chat_model()
+    yield
+
+
+app = FastAPI(title="Capstone: LangChain + Microsoft Foundry", lifespan=lifespan)
+
+@app.get("/health")
+def health() -> dict:
+    """Tiny liveness check."""
+    return {"status": "ok"}
+
+
+# response_model=ChatResponse makes FastAPI validate our OUTPUT too:
+# if we ever return something that doesn't match, it errors visibly.
+@app.post("/chat", response_model=ChatResponse)
+def chat(request: ChatRequest) -> ChatResponse:
+    """Send one message to the Foundry model and return a typed reply."""
+    try:
+        print(f"Request: {request.message}")
+        reply = ask(_chat_model, request.message)
+    except Exception as exc:  # surface upstream/model errors as HTTP 502.
+        raise HTTPException(status_code=502, detail=f"Model call failed: {exc}") from exc
+
+    # Fresh id per request for now (real memory comes in a later phase).
+    session_id = str(uuid.uuid4())
+
+    # Validate before returning. If `message` is empty, ChatResponse.message's
+    # min_length=1 raises a ValidationError -> visible error, not bad JSON.
+    return ChatResponse(session_id=session_id, message=reply)
