@@ -11,8 +11,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from .agent import ask, build_chat_model, settings
-from .schemas import ChatRequest, ChatResponse
+from .agent import answer_with_rag, ask, build_chat_model, settings
+from .schemas import AskRequest, AskResponse, ChatRequest, ChatResponse, Citation
 
 # Built once at startup so we reuse the same client across requests.
 _chat_model = None
@@ -55,3 +55,39 @@ def chat(request: ChatRequest) -> ChatResponse:
     # Validate before returning. If `message` is empty, ChatResponse.message's
     # min_length=1 raises a ValidationError -> visible error, not bad JSON.
     return ChatResponse(session_id=session_id, message=reply)
+
+
+@app.post("/ask", response_model=AskResponse)
+def ask_rag(request: AskRequest) -> AskResponse:
+    """Explicit two-step RAG: retrieve grounded chunks, then answer + cite."""
+    try:
+        answer, abstained, chunks = answer_with_rag(
+            _chat_model, request.question, top_k=request.top_k
+        )
+    except Exception as exc:  # surface retrieval/model errors as HTTP 502.
+        raise HTTPException(status_code=502, detail=f"RAG call failed: {exc}") from exc
+
+    # Print the exact chunks handed to the model (Phase 2 finish criterion).
+    print(f"Question: {request.question}")
+    for i, c in enumerate(chunks, start=1):
+        print(f"  [{i}] {c.source} {c.chunk_id} (score={c.score:.4f})")
+        print(f"      {c.content[:200]!r}")
+
+    citations = [
+        Citation(
+            source=c.source,
+            title=c.title,
+            chunk_id=c.chunk_id,
+            score=c.score,
+            content=c.content,
+        )
+        for c in chunks
+    ]
+
+    session_id = str(uuid.uuid4())
+    return AskResponse(
+        session_id=session_id,
+        answer=answer,
+        abstained=abstained,
+        citations=citations,
+    )

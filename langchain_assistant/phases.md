@@ -12,3 +12,17 @@ Finish when
 - The endpoint returns typed JSON.
 - Invalid output creates a visible validation error.
 - No key or credential is hard-coded.
+
+### Phase 2 — Explicit two-step RAG
+
+Build
+- Put the small note corpus in Azure Blob Storage.
+- Load the notes into LangChain Document objects.
+- Split them into chunks and add useful metadata.
+- Generate embeddings and index the chunks in Azure AI Search.
+- Always retrieve before generation and include citations.
+
+Finish when
+- An answer includes the source and chunk ID.
+- An unsupported question produces an abstention.
+- You can print the exact chunks given to the model.

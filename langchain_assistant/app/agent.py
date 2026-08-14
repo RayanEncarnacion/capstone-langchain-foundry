@@ -19,7 +19,7 @@ import os
 
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 # Load a local, git-ignored .env so `uv run` picks up secrets in dev.
@@ -82,3 +82,59 @@ def ask(model: ChatOpenAI, message: str) -> str:
     # Direct call: one human message in, one AI message out.
     result = model.invoke([HumanMessage(content=message)])
     return result.content
+
+
+# Sentinel the model must emit when the context does not support an answer.
+ABSTAIN_TOKEN = "INSUFFICIENT_EVIDENCE"
+
+# The grounding contract: answer only from context, cite, or abstain.
+_RAG_SYSTEM_PROMPT = (
+    "You are a study assistant that answers ONLY from the provided context.\n"
+    "Rules:\n"
+    "1. Use only facts found in the context blocks below. Do not use outside knowledge.\n"
+    "2. Cite the chunks you used inline with their bracket numbers, e.g. [1], [2].\n"
+    f"3. If the context does not contain enough information, reply with exactly "
+    f"'{ABSTAIN_TOKEN}' and nothing else.\n"
+    "Be concise."
+)
+
+
+def answer_with_rag(model: ChatOpenAI, question: str, top_k: int = 4):
+    """Explicit two-step RAG: retrieve, then generate a grounded answer.
+
+    Returns (answer_text, abstained_bool, retrieved_chunks). The chunks are
+    returned so the caller can print/return the exact evidence used.
+    """
+    # Imported lazily to avoid a circular import (retrieval -> storage -> agent).
+    from .retrieval import format_context, retrieve
+
+    chunks = retrieve(question, top_k=top_k)
+
+    # No hits at all -> abstain without even calling the model.
+    if not chunks:
+        return (
+            "I don't have enough information in the notes to answer that.",
+            True,
+            chunks,
+        )
+
+    context = format_context(chunks)
+    user_content = f"Context:\n{context}\n\nQuestion: {question}"
+
+    result = model.invoke(
+        [
+            SystemMessage(content=_RAG_SYSTEM_PROMPT),
+            HumanMessage(content=user_content),
+        ]
+    )
+    answer = result.content.strip()
+
+    # Detect abstention and normalise it into a friendly message.
+    if ABSTAIN_TOKEN in answer:
+        return (
+            "I don't have enough information in the notes to answer that.",
+            True,
+            chunks,
+        )
+
+    return answer, False, chunks
