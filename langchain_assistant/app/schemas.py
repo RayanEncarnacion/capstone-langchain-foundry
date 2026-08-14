@@ -6,8 +6,9 @@ returns something that does not fit ChatResponse, validation fails
 loudly instead of silently returning bad data.
 """
 
-from pydantic import BaseModel, Field
+from typing import Literal
 
+from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     """What the client must send to POST /chat."""
@@ -15,6 +16,11 @@ class ChatRequest(BaseModel):
     # The user's message. min_length=1 rejects empty strings.
     message: str = Field(..., min_length=1, description="User message to send to the model")
 
+class ToolCall(BaseModel):
+    """A single tool the agent invoked during a turn (for transparency)."""
+
+    name: str = Field(..., description="Tool name that was called")
+    args: dict = Field(default_factory=dict, description="Arguments passed to the tool")
 
 class ChatResponse(BaseModel):
     """The typed JSON the endpoint promises to return."""
@@ -23,7 +29,10 @@ class ChatResponse(BaseModel):
     session_id: str = Field(..., min_length=1, description="Session identifier")
     # The model's text answer.
     message: str = Field(..., min_length=1, description="Model reply text")
-
+    # Which tools (if any) the agent used to produce the answer.
+    tool_calls: list[ToolCall] = Field(
+        default_factory=list, description="Tools the agent invoked this turn"
+    )
 
 class Citation(BaseModel):
     """One retrieved chunk that supported (or was offered to) the answer."""
@@ -34,14 +43,12 @@ class Citation(BaseModel):
     score: float = Field(..., description="Search relevance score")
     content: str = Field(..., description="The exact chunk text given to the model")
 
-
 class AskRequest(BaseModel):
     """What the client sends to POST /ask (the RAG endpoint)."""
 
     question: str = Field(..., min_length=1, description="Question to answer from the notes")
     # How many chunks to retrieve before generating.
     top_k: int = Field(default=4, ge=1, le=20, description="Number of chunks to retrieve")
-
 
 class AskResponse(BaseModel):
     """Typed RAG reply: answer, abstention flag, and the chunks used."""
@@ -51,4 +58,22 @@ class AskResponse(BaseModel):
     abstained: bool = Field(..., description="True when evidence was insufficient")
     citations: list[Citation] = Field(
         default_factory=list, description="Chunks retrieved and shown to the model"
+    )
+
+class Task(BaseModel):
+    """A single task record stored in Cosmos DB.
+
+    `id` and `user_id` are Cosmos plumbing (item key + partition key); the
+    rest is the minimum viable task shape. `status` is constrained so the
+    model cannot invent arbitrary states.
+    """
+
+    id: str = Field(..., description="Unique task id (Cosmos item key)")
+    user_id: str = Field(..., description="Owner id (Cosmos partition key)")
+    title: str = Field(..., min_length=1, description="Short task description")
+    status: Literal["pending", "done"] = Field(
+        default="pending", description="Task state"
+    )
+    due_date: str | None = Field(
+        default=None, description="Optional ISO date (YYYY-MM-DD)"
     )

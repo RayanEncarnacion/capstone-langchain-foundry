@@ -138,3 +138,64 @@ def answer_with_rag(model: ChatOpenAI, question: str, top_k: int = 4):
         )
 
     return answer, False, chunks
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: tool-calling agent (create_agent) over notes + tasks
+# ---------------------------------------------------------------------------
+# Tool schemas describe each tool. This prompt only adds global routing,
+# grounding, and error-handling rules that span all tools.
+_AGENT_SYSTEM_PROMPT = (
+    "You are a study assistant with access to tools. Decide for each turn "
+    "whether a tool is needed; do not call tools you do not need.\n\n"
+    "Use note search only when the answer needs factual knowledge from the "
+    "user's notes. Do not search for greetings, chit-chat, or task management.\n\n"
+    "Grounding rules when you use search_notes:\n"
+    "1. Answer only from the returned snippets; do not use outside knowledge.\n"
+    "2. Cite the snippets you used by their source and chunk_id.\n"
+    "3. If the snippets do not contain enough information, say you don't have "
+    "enough information in the notes rather than guessing.\n\n"
+    "If a tool returns {\"ok\": false, ...}, tell the user the action failed "
+    "and briefly why. Never pretend a failed tool succeeded. Be concise."
+)
+
+
+def build_agent():
+    """Construct the tool-calling agent with create_agent.
+
+    Binds the chat model to the notes + task tools and installs the fused
+    system prompt. Returns a compiled agent graph you invoke with a message
+    list, e.g. agent.invoke({"messages": [HumanMessage(...)]}).
+    """
+    # Lazy import so importing agent.py stays cheap and side-effect free.
+    from langchain.agents import create_agent
+
+    from .tools import ALL_TOOLS
+
+    return create_agent(
+        build_chat_model(),
+        ALL_TOOLS,
+        system_prompt=_AGENT_SYSTEM_PROMPT,
+    )
+
+
+def run_agent(agent, message: str) -> tuple[str, list[dict]]:
+    """Run one user turn through the agent.
+
+    Returns (reply_text, tool_calls) where tool_calls is a small list of
+    {"name", "args"} dicts describing which tools the agent invoked. The
+    model-tool loop itself is handled by create_agent; we only read the
+    resulting message history.
+    """
+    result = agent.invoke({"messages": [HumanMessage(content=message)]})
+    messages = result["messages"]
+
+    # Collect any tool invocations across the turn for transparency.
+    tool_calls: list[dict] = []
+    for msg in messages:
+        for call in getattr(msg, "tool_calls", None) or []:
+            tool_calls.append({"name": call["name"], "args": call.get("args", {})})
+
+    # The final message is the agent's text answer to the user.
+    reply = messages[-1].content if messages else ""
+    return reply, tool_calls

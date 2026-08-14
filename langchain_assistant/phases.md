@@ -6,7 +6,7 @@ Build
 - Validate the result with the shared Pydantic response schema.
 
 Tools
-FastAPI, Uvicorn, Pydantic, langchain-openai, Azure Identity.
+- FastAPI, Uvicorn, Pydantic, langchain-openai, Azure Identity.
 
 Finish when
 - The endpoint returns typed JSON.
@@ -34,7 +34,26 @@ Build
 - Run keyword-only, vector-only, hybrid, and hybrid plus semantic queries.
 - Record the top three chunks and scores for each approach.
 
+Tools
+- Azure AI Search Search Explorer and the Python Search SDK.
+
 Finish when
 - You can explain why keyword and vector results differ.
 - You understand reciprocal rank fusion at a practical level.
 - You select a retrieval baseline using evidence rather than intuition.
+
+## Phase 4 — Agent and tools
+
+Build
+- Wrap retrieval as search_notes.
+- Add list_tasks and create_task.
+- Build the agent with create_agent.
+- Keep tool results small and structured.
+
+Tools
+- LangChain @tool, create_agent, Pydantic tool arguments, Azure Cosmos DB SDK.
+
+Finish when
+- The model searches only when knowledge is needed.
+- Task requests select the appropriate task tool.
+- Tool errors are returned safely rather than hidden.

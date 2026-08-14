@@ -57,6 +57,20 @@ class RagSettings:
             "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small"
         )
 
+        # --- Azure Cosmos DB (task store) ---------------------------------
+        # Prefer a full connection string, else an endpoint used keyless.
+        self.cosmos_connection_string = os.environ.get("COSMOS_CONNECTION_STRING")
+        self.cosmos_endpoint = os.environ.get("COSMOS_ENDPOINT")
+        self.cosmos_database = os.environ.get("COSMOS_DATABASE", "capstone-db")
+        self.cosmos_container = os.environ.get("COSMOS_CONTAINER", "tasks")
+
+    def require_cosmos(self) -> None:
+        """Fail fast if no way to reach Cosmos DB is configured."""
+        if not self.cosmos_connection_string and not self.cosmos_endpoint:
+            raise RuntimeError(
+                "Set COSMOS_CONNECTION_STRING or COSMOS_ENDPOINT."
+            )
+
     def require_search(self) -> None:
         """Fail fast if Search settings are missing."""
         if not self.search_endpoint:
@@ -222,3 +236,30 @@ def ensure_index(embedding_dim: int) -> None:
     # Idempotent: replaces the definition if it already exists.
     # pylint: disable=no-member  # method added dynamically by the azure-search SDK patch layer.
     index_client.create_or_update_index(index)
+
+
+# ---------------------------------------------------------------------------
+# Azure Cosmos DB (task store)
+# ---------------------------------------------------------------------------
+# Partition key for the tasks container, per the project's provisioning.
+COSMOS_PARTITION_KEY = "/user_id"
+
+
+def _cosmos_client():
+    """Build a CosmosClient from a connection string or keyless endpoint."""
+    from azure.cosmos import CosmosClient
+
+    rag_settings.require_cosmos()
+    if rag_settings.cosmos_connection_string:
+        return CosmosClient.from_connection_string(rag_settings.cosmos_connection_string)
+    return CosmosClient(
+        url=rag_settings.cosmos_endpoint,
+        credential=DefaultAzureCredential(),
+    )
+
+
+def get_tasks_container():
+    """Return the tasks container client (assumes db/container provisioned)."""
+    client = _cosmos_client()
+    database = client.get_database_client(rag_settings.cosmos_database)
+    return database.get_container_client(rag_settings.cosmos_container)
