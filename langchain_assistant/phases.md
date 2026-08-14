@@ -13,7 +13,7 @@ Finish when
 - Invalid output creates a visible validation error.
 - No key or credential is hard-coded.
 
-### Phase 2 — Explicit two-step RAG
+## Phase 2 — Explicit two-step RAG
 
 Build
 - Put the small note corpus in Azure Blob Storage.
@@ -26,3 +26,15 @@ Finish when
 - An answer includes the source and chunk ID.
 - An unsupported question produces an abstention.
 - You can print the exact chunks given to the model.
+
+## Phase 3 — Retrieval experiments
+
+Build
+- Choose five questions with different wording from the source text.
+- Run keyword-only, vector-only, hybrid, and hybrid plus semantic queries.
+- Record the top three chunks and scores for each approach.
+
+Finish when
+- You can explain why keyword and vector results differ.
+- You understand reciprocal rank fusion at a practical level.
+- You select a retrieval baseline using evidence rather than intuition.
