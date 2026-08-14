@@ -18,13 +18,26 @@ Design rules for this phase:
 
 import uuid
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from langgraph.prebuilt import InjectedStore
+from langgraph.store.base import BaseStore
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Annotated, Literal
 
-# Single-user demo: partition key value for every task item. In a real app
-# this would come from auth, not a constant.
+# Fallback partition key value when a request carries no authenticated user.
+# Real user ids arrive per-turn via config["configurable"]["user_id"].
 DEFAULT_USER_ID = "default-user"
+
+
+def _user_id(config: RunnableConfig) -> str:
+    """Read the authenticated user id injected into the run config."""
+    return (config.get("configurable") or {}).get("user_id") or DEFAULT_USER_ID
+
+
+def _prefs_namespace(user_id: str) -> tuple[str, str]:
+    """Store namespace for a user's preferences (isolates users from each other)."""
+    return (user_id, "preferences")
 
 # Keep snippets short so tool output stays token-cheap.
 _SNIPPET_CHARS = 240
@@ -82,7 +95,7 @@ class ListTasksArgs(BaseModel):
 
 
 @tool(args_schema=ListTasksArgs)
-def list_tasks(status: str = "all") -> dict:
+def list_tasks(status: str = "all", *, config: RunnableConfig) -> dict:
     """List the user's tasks, optionally filtered by status.
 
     Use when the user asks what tasks/to-dos they have. Returns a small
@@ -91,6 +104,7 @@ def list_tasks(status: str = "all") -> dict:
     try:
         from .storage import get_tasks_container
 
+        user_id = _user_id(config)
         container = get_tasks_container()
         if status == "all":
             query = "SELECT c.id, c.title, c.status, c.due_date FROM c"
@@ -106,7 +120,7 @@ def list_tasks(status: str = "all") -> dict:
             container.query_items(
                 query=query,
                 parameters=params,
-                partition_key=DEFAULT_USER_ID,
+                partition_key=user_id,
             )
         )
         return {"ok": True, "count": len(items), "tasks": items}
@@ -127,7 +141,9 @@ class CreateTaskArgs(BaseModel):
 
 
 @tool(args_schema=CreateTaskArgs)
-def create_task(title: str, due_date: str | None = None) -> dict:
+def create_task(
+    title: str, due_date: str | None = None, *, config: RunnableConfig
+) -> dict:
     """Create a new task for the user.
 
     Use when the user asks to add/create/remember a task or to-do. Returns
@@ -138,7 +154,7 @@ def create_task(title: str, due_date: str | None = None) -> dict:
 
         item = {
             "id": str(uuid.uuid4()),
-            "user_id": DEFAULT_USER_ID,
+            "user_id": _user_id(config),
             "title": title,
             "status": "pending",
             "due_date": due_date,
@@ -158,5 +174,69 @@ def create_task(title: str, due_date: str | None = None) -> dict:
         return {"ok": False, "error": f"create_task failed: {exc}"}
 
 
+# ---------------------------------------------------------------------------
+# set_preference / get_preference  (long-term, cross-thread, per-user memory)
+# ---------------------------------------------------------------------------
+class SetPreferenceArgs(BaseModel):
+    """Arguments for saving a durable user preference."""
+
+    key: str = Field(
+        ..., min_length=1, description="Preference name, e.g. 'session_duration'"
+    )
+    value: str = Field(..., min_length=1, description="Preference value, e.g. '25 minutes'")
+
+
+@tool(args_schema=SetPreferenceArgs)
+def set_preference(
+    key: str,
+    value: str,
+    *,
+    config: RunnableConfig,
+    store: Annotated[BaseStore, InjectedStore()],
+) -> dict:
+    """Remember a durable preference for the user across all conversations.
+
+    Use when the user states a lasting preference (e.g. their preferred study
+    session duration). Persists to the long-term store, namespaced by user.
+    """
+    try:
+        user_id = _user_id(config)
+        store.put(_prefs_namespace(user_id), key, {"value": value})
+        return {"ok": True, "key": key, "value": value}
+    except Exception as exc:
+        return {"ok": False, "error": f"set_preference failed: {exc}"}
+
+
+class GetPreferenceArgs(BaseModel):
+    """Arguments for reading a durable user preference."""
+
+    key: str = Field(
+        ..., min_length=1, description="Preference name to look up, e.g. 'session_duration'"
+    )
+
+
+@tool(args_schema=GetPreferenceArgs)
+def get_preference(
+    key: str,
+    *,
+    config: RunnableConfig,
+    store: Annotated[BaseStore, InjectedStore()],
+) -> dict:
+    """Look up a durable preference the user set earlier (any conversation).
+
+    Use when answering depends on a saved preference. Reads from the
+    long-term store, namespaced by user, so only this user's value is visible.
+    """
+    try:
+        user_id = _user_id(config)
+        item = store.get(_prefs_namespace(user_id), key)
+        print(f"get_preference: item={item}, user_id={user_id}, key={key}")
+        if item is None:
+            return {"ok": True, "found": False, "key": key}
+        return {"ok": True, "found": True, "key": key, "value": item.value.get("value")}
+    except Exception as exc:
+        return {"ok": False, "error": f"get_preference failed: {exc}"}
+
+
 # Exported list the agent binds at build time.
-ALL_TOOLS = [search_notes, list_tasks, create_task]
+ALL_TOOLS = [search_notes, list_tasks, create_task, set_preference, get_preference]

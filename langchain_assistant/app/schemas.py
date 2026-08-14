@@ -15,6 +15,11 @@ class ChatRequest(BaseModel):
 
     # The user's message. min_length=1 rejects empty strings.
     message: str = Field(..., min_length=1, description="User message to send to the model")
+    # Conversation thread. Omit to start a new thread; reuse to continue one
+    # (the checkpointer resumes that thread's state so follow-ups have context).
+    thread_id: str | None = Field(
+        default=None, description="Thread to continue; omit to start a new one"
+    )
 
 class ToolCall(BaseModel):
     """A single tool the agent invoked during a turn (for transparency)."""

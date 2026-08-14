@@ -14,10 +14,12 @@ So retrieval, task management, and plain chat all live behind /chat.
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 from .agent import build_agent, run_agent, settings
+from .auth import get_current_user, init_api_keys
 from .schemas import ChatRequest, ChatResponse, ToolCall
+from .storage import build_checkpointer, build_store
 
 # Built once at startup so we reuse the same compiled agent across requests.
 _agent = None
@@ -31,7 +33,12 @@ async def lifespan(app: FastAPI):
 
     global _agent
     settings.require()  # crash early if endpoint/deployment are missing.
-    _agent = build_agent()
+    init_api_keys()     # crash early if API_KEYS is missing/empty.
+    # Wire Cosmos-backed memory: checkpointer (per-thread state) + store
+    # (per-user, cross-thread long-term memory).
+    checkpointer = build_checkpointer()
+    store = build_store()
+    _agent = build_agent(checkpointer=checkpointer, store=store)
     yield
 
 
@@ -47,11 +54,16 @@ def health() -> dict:
 # response_model=ChatResponse makes FastAPI validate our OUTPUT too:
 # if we ever return something that doesn't match, it errors visibly.
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(
+    request: ChatRequest, user_id: str = Depends(get_current_user)
+) -> ChatResponse:
     """Send one message to the agent; it may chat, search notes, or manage tasks."""
+    thread_id = request.thread_id or str(uuid.uuid4())
+
     try:
-        print(f"Request: {request.message}")
-        reply, tool_calls = run_agent(_agent, request.message)
+        reply, tool_calls = run_agent(
+            _agent, request.message, thread_id=thread_id, user_id=user_id
+        )
     except Exception as exc:  # surface agent/model/tool wiring errors as HTTP 502.
         raise HTTPException(status_code=502, detail=f"Agent call failed: {exc}") from exc
 
@@ -59,13 +71,10 @@ def chat(request: ChatRequest) -> ChatResponse:
     for call in tool_calls:
         print(f"  tool: {call['name']} args={call['args']}")
 
-    # Fresh id per request for now (real memory comes in a later phase).
-    session_id = str(uuid.uuid4())
-
-    # Validate before returning. If `message` is empty, ChatResponse.message's
-    # min_length=1 raises a ValidationError -> visible error, not bad JSON.
+    # Echo the thread id back as session_id so the client reuses it to
+    # continue the conversation (the checkpointer resumes that thread).
     return ChatResponse(
-        session_id=session_id,
+        session_id=thread_id,
         message=reply,
         tool_calls=[ToolCall(name=c["name"], args=c["args"]) for c in tool_calls],
     )

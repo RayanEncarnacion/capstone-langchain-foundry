@@ -13,13 +13,16 @@ dependencies = [
     "azure-search-documents>=12.0.0",
     "azure-storage-blob>=12.30.0",
     "fastapi>=0.141.1",
+    "httpx>=0.27.0",
     "langchain>=1.3.15",
+    "langchain-azure-cosmosdb>=1.0.0",
     "langchain-community>=0.4.2",
     "langchain-core>=1.5.4",
     "langchain-openai>=1.5.0",
     "langchain-text-splitters>=1.1.2",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
+    "python-jose[cryptography]>=3.3.0",
     "uvicorn[standard]>=0.52.3",
 ]
 

@@ -156,16 +156,23 @@ _AGENT_SYSTEM_PROMPT = (
     "3. If the snippets do not contain enough information, say you don't have "
     "enough information in the notes rather than guessing.\n\n"
     "If a tool returns {\"ok\": false, ...}, tell the user the action failed "
-    "and briefly why. Never pretend a failed tool succeeded. Be concise."
+    "and briefly why. Never pretend a failed tool succeeded. Be concise.\n\n"
+    "Memory rules:\n"
+    "- When the user states a lasting preference (e.g. a preferred study "
+    "session duration), call set_preference to remember it.\n"
+    "- When a request depends on such a preference, call get_preference to "
+    "recall it instead of guessing."
 )
 
 
-def build_agent():
+def build_agent(checkpointer=None, store=None):
     """Construct the tool-calling agent with create_agent.
 
-    Binds the chat model to the notes + task tools and installs the fused
-    system prompt. Returns a compiled agent graph you invoke with a message
-    list, e.g. agent.invoke({"messages": [HumanMessage(...)]}).
+    Binds the chat model to the notes + task + memory tools and installs the
+    fused system prompt. Passing a `checkpointer` persists per-thread state
+    (resumable conversations); passing a `store` gives tools cross-thread,
+    per-user long-term memory. Returns a compiled agent graph you invoke with
+    a message list plus a config carrying thread_id / user_id.
     """
     # Lazy import so importing agent.py stays cheap and side-effect free.
     from langchain.agents import create_agent
@@ -176,18 +183,27 @@ def build_agent():
         build_chat_model(),
         ALL_TOOLS,
         system_prompt=_AGENT_SYSTEM_PROMPT,
+        checkpointer=checkpointer,
+        store=store,
     )
 
 
-def run_agent(agent, message: str) -> tuple[str, list[dict]]:
+def run_agent(
+    agent, message: str, thread_id: str, user_id: str
+) -> tuple[str, list[dict]]:
     """Run one user turn through the agent.
+
+    `thread_id` selects the conversation the checkpointer resumes; `user_id`
+    is the authenticated identity used to namespace long-term memory and
+    scope task records. Both are passed via the run config's `configurable`.
 
     Returns (reply_text, tool_calls) where tool_calls is a small list of
     {"name", "args"} dicts describing which tools the agent invoked. The
     model-tool loop itself is handled by create_agent; we only read the
     resulting message history.
     """
-    result = agent.invoke({"messages": [HumanMessage(content=message)]})
+    config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+    result = agent.invoke({"messages": [HumanMessage(content=message)]}, config=config)
     messages = result["messages"]
 
     # Collect any tool invocations across the turn for transparency.

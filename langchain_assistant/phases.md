@@ -57,3 +57,19 @@ Finish when
 - The model searches only when knowledge is needed.
 - Task requests select the appropriate task tool.
 - Tool errors are returned safely rather than hidden.
+
+## Phase 5 — Memory and persistence
+
+Build
+- Persist agent state under a thread ID.
+- Add a long-term Store namespaced by authenticated user ID.
+- Remember one explicit preference such as preferred session duration.
+- Keep tasks in a separate application-data container.
+
+Tools
+- CosmosDBSaver, CosmosDBStore, langchain-azure-cosmosdb.
+
+Finish when
+- A follow-up works in the same thread.
+- A preference survives a new thread.
+- A different user cannot retrieve that preference.

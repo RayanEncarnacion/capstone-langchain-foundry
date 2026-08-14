@@ -57,12 +57,21 @@ class RagSettings:
             "AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small"
         )
 
-        # --- Azure Cosmos DB (task store) ---------------------------------
+        # --- Azure Cosmos DB (task store + agent memory) ------------------
         # Prefer a full connection string, else an endpoint used keyless.
         self.cosmos_connection_string = os.environ.get("COSMOS_CONNECTION_STRING")
         self.cosmos_endpoint = os.environ.get("COSMOS_ENDPOINT")
         self.cosmos_database = os.environ.get("COSMOS_DATABASE", "capstone-db")
+        # tasks: application records (Phase 4).
         self.cosmos_container = os.environ.get("COSMOS_CONTAINER", "tasks")
+        # checkpoints: resumable per-thread agent state (CosmosDBSaver).
+        self.cosmos_checkpoints_container = os.environ.get(
+            "COSMOS_CHECKPOINTS_CONTAINER", "checkpoints"
+        )
+        # memories: cross-thread, per-user long-term store (CosmosDBStore).
+        self.cosmos_memories_container = os.environ.get(
+            "COSMOS_MEMORIES_CONTAINER", "memories"
+        )
 
     def require_cosmos(self) -> None:
         """Fail fast if no way to reach Cosmos DB is configured."""
@@ -263,3 +272,61 @@ def get_tasks_container():
     client = _cosmos_client()
     database = client.get_database_client(rag_settings.cosmos_database)
     return database.get_container_client(rag_settings.cosmos_container)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: agent memory (checkpointer + long-term store)
+# ---------------------------------------------------------------------------
+# CosmosDBSaver / CosmosDBStore want an (endpoint, key) pair rather than a
+# connection string. Parse the connection string when present; otherwise fall
+# back to the endpoint with key=None (keyless -> DefaultAzureCredential).
+def _cosmos_endpoint_and_key() -> tuple[str | None, str | None]:
+    """Return (endpoint, key) for the Cosmos account. key is None if keyless."""
+    if rag_settings.cosmos_connection_string:
+        parts = dict(
+            piece.split("=", 1)
+            for piece in rag_settings.cosmos_connection_string.split(";")
+            if "=" in piece
+        )
+        return parts.get("AccountEndpoint"), parts.get("AccountKey")
+    return rag_settings.cosmos_endpoint, None
+
+
+def build_checkpointer():
+    """Return a CosmosDBSaver over the `checkpoints` container.
+
+    The saver persists the agent's graph state per thread_id, so a follow-up
+    turn on the same thread resumes the previous conversation.
+    """
+    from langchain_azure_cosmosdb import CosmosDBSaverSync
+
+    rag_settings.require_cosmos()
+    endpoint, key = _cosmos_endpoint_and_key()
+    return CosmosDBSaverSync(
+        database_name=rag_settings.cosmos_database,
+        container_name=rag_settings.cosmos_checkpoints_container,
+        endpoint=endpoint,
+        key=key,  # None -> DefaultAzureCredential inside the saver.
+    )
+
+
+def build_store():
+    """Return a CosmosDBStore over the `memories` container.
+
+    The store holds cross-thread, per-user records. We namespace every write
+    by the authenticated user id, so preferences survive new threads and one
+    user can never read another user's memory.
+    """
+    from langchain_azure_cosmosdb import CosmosDBStore
+
+    rag_settings.require_cosmos()
+    endpoint, key = _cosmos_endpoint_and_key()
+    store = CosmosDBStore.from_endpoint(
+        endpoint=endpoint,
+        credential=key,  # None -> DefaultAzureCredential inside the store.
+        database_name=rag_settings.cosmos_database,
+        container_name=rag_settings.cosmos_memories_container,
+    )
+    # Idempotent: ensures container indexing is ready for get/put/search.
+    store.setup()
+    return store
