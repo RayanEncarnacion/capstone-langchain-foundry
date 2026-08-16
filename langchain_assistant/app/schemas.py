@@ -11,7 +11,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
-    """What the client must send to POST /chat."""
+    """What the client must send to POST /chat.
+
+    Note: there is deliberately NO user_id field. Identity is derived from the
+    validated access token (Phase 6), so neither the client nor the model can
+    supply or change who they are.
+    """
 
     # The user's message. min_length=1 rejects empty strings.
     message: str = Field(..., min_length=1, description="User message to send to the model")
@@ -21,11 +26,28 @@ class ChatRequest(BaseModel):
         default=None, description="Thread to continue; omit to start a new one"
     )
 
+class ApprovalRequest(BaseModel):
+    """What the client sends to POST /approve to resume a paused run.
+
+    A write tool (create_task) interrupts the run and waits for a human
+    decision. The client resumes the SAME thread with approve=true/false.
+    """
+
+    thread_id: str = Field(..., min_length=1, description="Interrupted thread to resume")
+    approved: bool = Field(..., description="True to run the pending tool, false to reject")
+
 class ToolCall(BaseModel):
     """A single tool the agent invoked during a turn (for transparency)."""
 
     name: str = Field(..., description="Tool name that was called")
     args: dict = Field(default_factory=dict, description="Arguments passed to the tool")
+
+class PendingApproval(BaseModel):
+    """A write action that is paused awaiting human approval."""
+
+    name: str = Field(..., description="Tool the agent wants to run")
+    args: dict = Field(default_factory=dict, description="Arguments the tool would run with")
+    description: str = Field(default="", description="Human-readable review prompt")
 
 class ChatResponse(BaseModel):
     """The typed JSON the endpoint promises to return."""
@@ -37,6 +59,14 @@ class ChatResponse(BaseModel):
     # Which tools (if any) the agent used to produce the answer.
     tool_calls: list[ToolCall] = Field(
         default_factory=list, description="Tools the agent invoked this turn"
+    )
+    # True when the run paused for approval instead of finishing (HITL).
+    approval_required: bool = Field(
+        default=False, description="Run paused awaiting approval of a write tool"
+    )
+    # The action(s) awaiting approval, if approval_required is True.
+    pending: list[PendingApproval] = Field(
+        default_factory=list, description="Write actions awaiting approval"
     )
 
 class Citation(BaseModel):

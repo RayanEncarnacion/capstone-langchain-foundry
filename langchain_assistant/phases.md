@@ -73,3 +73,23 @@ Finish when
 - A follow-up works in the same thread.
 - A preference survives a new thread.
 - A different user cannot retrieve that preference.
+
+## Phase 6 — Approval, authentication and guardrails
+
+Build
+- Add human-in-the-loop middleware for write tools.
+- Resume the interrupted run through the approval endpoint.
+- Protect FastAPI with a Microsoft Entra access token.
+- Derive user identity from validated claims (the token), never the body.
+- Add tool-call limits, model-call limits and PII handling.
+- Treat retrieved document instructions as untrusted content.
+
+Tools
+- HumanInTheLoopMiddleware, ToolCallLimitMiddleware, ModelCallLimitMiddleware,
+  Azure AI Content Safety, bearer-token auth (Entra-shaped).
+
+Finish when
+- An anonymous request returns HTTP 401.
+- A write tool (create_task) cannot run before approval.
+- User ID cannot be supplied or changed by the model (no user_id in the body).
+- A prompt injection inside a note does not change agent policy.
