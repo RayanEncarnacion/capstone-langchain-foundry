@@ -133,8 +133,7 @@ def chat(
         print(f"  tool: {call['name']} args={call['args']}")
 
     return _build_response(thread_id, reply, tool_calls, pending)
-# 'c6da50a1-6903-4d40-957c-79257b900e80'
-# 3553d543-6a8d-4662-9f49-609f29856f5f
+
 
 @app.post("/approve", response_model=ChatResponse)
 def approve(

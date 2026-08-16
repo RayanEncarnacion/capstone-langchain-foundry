@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "agent-framework-foundry>=1.10.0",
     "azure-ai-contentsafety>=1.0.0",
     "azure-cosmos>=4.16.3",
     "azure-identity>=1.25.3",
@@ -34,3 +35,15 @@ dependencies = [
 # Application, not a library: uv only manages the venv + deps (no build step).
 [tool.uv]
 package = false
+
+# Test-only dependencies (installed with `uv sync --group dev`).
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Project is not installed (package = false), so put the repo root on the
+# import path for `import langchain_assistant...`.
+pythonpath = [".", "foundry_assistant"]

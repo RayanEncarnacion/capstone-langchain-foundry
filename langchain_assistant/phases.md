@@ -110,3 +110,16 @@ Finish when
 - You can identify whether a failure started in retrieval, tool choice or generation.
 - You can compare two experiments using the same dataset.
 - You can find latency and token-heavy steps in a trace.
+
+## Phase 8 — Cleanup and focused tests
+
+Build
+- Add timeouts and bounded retries.
+- Cap retrieved chunks and model/tool calls.
+- Add three end-to-end API tests.
+- Remove abstractions that are not earning their complexity.
+
+After this changes:
+- The application has roughly 5–7 meaningful modules.
+- The same test produces repeatable traces and evaluation results.
+- You can explain the purpose of every file
