@@ -93,3 +93,17 @@ Finish when
 - A write tool (create_task) cannot run before approval.
 - User ID cannot be supplied or changed by the model (no user_id in the body).
 - A prompt injection inside a note does not change agent policy.
+
+## Phase 7 — LangSmith tracing and evaluation
+
+Build
+- Enable LangSmith tracing for the local API.
+- Create the shared 12–15 example dataset described later.
+- Add deterministic evaluators for citations, abstention and tool selection.
+- Add groundedness and relevance evaluation after deterministic checks work.
+- Compare two retrieval or prompt variants as separate experiments.
+
+Finish when
+- You can identify whether a failure started in retrieval, tool choice or generation.
+- You can compare two experiments using the same dataset.
+- You can find latency and token-heavy steps in a trace.
