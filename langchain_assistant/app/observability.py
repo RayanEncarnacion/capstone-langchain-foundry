@@ -1,48 +1,65 @@
-"""Optional Microsoft OpenTelemetry export to Application Insights / Foundry.
+"""Microsoft Foundry / Application Insights tracing for the LangChain agent.
 
-This is the *comparison* observability path from Phase 7. Normal development
-uses LangSmith (LANGCHAIN_TRACING_V2=true). To inspect the same LangChain app
-through Application Insights or Foundry observability instead, run a separate
-process that calls enable_azure_monitor_tracing() at startup.
+Uses langchain-azure-ai's enable_auto_tracing() to globally patch all LangChain
+callback managers. Every agent.invoke() after this call emits GenAI-convention
+OTel spans to Application Insights. These surface in the Foundry Tracing tab
+when the App Insights resource is linked to the Foundry project.
 
-Export uses azure-monitor-opentelemetry (Azure Monitor ingestion endpoint), so
-the App Insights resource does NOT need the generic OTLP endpoint enabled. The
-connection string carries the ingestion endpoint it needs.
-
-To AVOID duplicate traces we hard-disable LangSmith in this process (see
-enable_azure_monitor_tracing): a given run should stream to one backend only.
+Normal development still uses LangSmith. To avoid double-sending traces, this
+module disables LangSmith in the current process.
 """
 
 import os
 
+DEFAULT_AGENT_ID = os.environ.get("FOUNDRY_AGENT_ID", "study-assistant")
 
-def enable_azure_monitor_tracing(disable_langsmith: bool = True) -> None:
-    """Instrument LangChain and export spans to Application Insights.
 
-    Args:
-        disable_langsmith: when True (default), turn off LangSmith tracing in
-            this process so runs are not double-sent to both backends.
+def _disable_langsmith() -> None:
+    """Turn LangSmith off in this process so traces aren't double-sent."""
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    os.environ.pop("LANGCHAIN_API_KEY", None)
 
-    Requires APPLICATIONINSIGHTS_CONNECTION_STRING in the environment.
+
+def enable_foundry_tracing(disable_langsmith: bool = True) -> None:
+    """Globally enable Foundry / App Insights tracing for all LangChain runs.
+
+    Must be called BEFORE building any agent or chat model. After this call,
+    every LangChain invoke (model, tool, graph node) automatically emits spans.
+
+    Resolution order for the telemetry target:
+      1. AZURE_AI_PROJECT_ENDPOINT -> resolves linked App Insights from the
+         Foundry project (keyless, DefaultAzureCredential).
+      2. APPLICATIONINSIGHTS_CONNECTION_STRING -> target App Insights directly.
     """
+    from langchain_azure_ai.callbacks.tracers import enable_auto_tracing
+
+    project_endpoint = os.environ.get("AZURE_AI_PROJECT_ENDPOINT") or os.environ.get(
+        "FOUNDRY_PROJECT_ENDPOINT"
+    )
     connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
-    if not connection_string:
+
+    if not project_endpoint and not connection_string:
         raise RuntimeError(
-            "Set APPLICATIONINSIGHTS_CONNECTION_STRING to export to Azure Monitor."
+            "Set AZURE_AI_PROJECT_ENDPOINT (preferred) or "
+            "APPLICATIONINSIGHTS_CONNECTION_STRING."
         )
 
     if disable_langsmith:
-        # Belt and suspenders: unset both the flag and the key so the LangSmith
-        # callback never attaches in this process.
-        os.environ["LANGCHAIN_TRACING_V2"] = "false"
-        os.environ.pop("LANGCHAIN_API_KEY", None)
+        _disable_langsmith()
 
-    # Configure the Azure Monitor OpenTelemetry pipeline (traces -> App Insights).
-    from azure.monitor.opentelemetry import configure_azure_monitor
+    kwargs = {
+        "enable_content_recording": True,
+        "provider_name": "azure.ai.openai",
+        "trace_all_langgraph_nodes": True,
+        "auto_configure_azure_monitor": True,
+    }
 
-    configure_azure_monitor(connection_string=connection_string)
+    if project_endpoint:
+        from azure.identity import DefaultAzureCredential
 
-    # Emit OpenTelemetry spans for every LangChain / LangGraph run.
-    from openinference.instrumentation.langchain import LangChainInstrumentor
+        kwargs["project_endpoint"] = project_endpoint
+        kwargs["credential"] = DefaultAzureCredential()
+    else:
+        kwargs["connection_string"] = connection_string
 
-    LangChainInstrumentor().instrument()
+    enable_auto_tracing(**kwargs)

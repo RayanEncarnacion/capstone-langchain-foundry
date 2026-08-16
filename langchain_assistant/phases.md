@@ -101,7 +101,10 @@ Build
 - Create the shared 12–15 example dataset described later.
 - Add deterministic evaluators for citations, abstention and tool selection.
 - Add groundedness and relevance evaluation after deterministic checks work.
-- Compare two retrieval or prompt variants as separate experiments.
+- Compare two retrieval or prompt variants as separate experiments. 
+
+Optional comparison
+- Run a separate process configured with Microsoft OpenTelemetry export so the LangChain application can also be inspected through Application Insights or Foundry observability. Avoid sending duplicate traces to both systems in the normal development run.
 
 Finish when
 - You can identify whether a failure started in retrieval, tool choice or generation.

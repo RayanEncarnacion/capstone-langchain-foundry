@@ -271,19 +271,23 @@ def _summarize_result(result) -> tuple[str, list[dict], list[dict]]:
 
 
 def run_agent(
-    agent, message: str, thread_id: str, user_id: str
+    agent, message: str, thread_id: str, user_id: str, callbacks: list | None = None
 ) -> tuple[str, list[dict], list[dict]]:
     """Run one user turn through the agent.
 
     `thread_id` selects the conversation the checkpointer resumes; `user_id`
     is the authenticated identity used to namespace long-term memory and
     scope task records. Both are passed via the run config's `configurable`.
+    `callbacks` attaches run-level LangChain callbacks (e.g. the Foundry
+    OpenTelemetry tracer) so this turn is traced.
 
     Returns (reply_text, tool_calls, pending). If a write tool triggered the
     human-in-the-loop gate, `pending` describes the action awaiting approval
     and the run is paused (resume it via `resume_agent`).
     """
     config = {"configurable": {"thread_id": thread_id, "user_id": user_id}}
+    if callbacks:
+        config["callbacks"] = callbacks
     result = agent.invoke({"messages": [HumanMessage(content=message)]}, config=config)
     return _summarize_result(result)
 
