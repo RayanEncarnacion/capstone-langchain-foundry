@@ -86,7 +86,15 @@ _SYSTEM_PROMPT = (
     "authenticated user's own tasks; you cannot see or choose another user's "
     "tasks, so never ask for or accept a user id as an argument. When a tool "
     "returns {\"ok\": false, ...}, tell the user what went wrong instead of "
-    "inventing a result."
+    "inventing a result. "
+    "MEMORY / PREFERENCES: the user may tell you how they want to be addressed "
+    "(a preferred name or nickname). Only when the user explicitly asks you to "
+    "remember their name/nickname, call `remember_nickname`. Recall preferences "
+    "ONLY when the user asks (e.g. 'what's my name', 'what do you remember about "
+    "me') by calling `get_my_preferences` — never volunteer them unprompted. "
+    "When the user asks you to forget their name/preferences, call "
+    "`forget_my_preferences`. Do not store anything other than an explicitly "
+    "requested preference, and never accept a user id as an argument."
 )
 
 
@@ -133,6 +141,7 @@ def build_agent(kb_tool):
     from agent_framework import Agent
     from agent_framework.foundry import FoundryChatClient
 
+    from .memory import PREFERENCE_TOOLS
     from .tools import TASK_TOOLS
 
     client = FoundryChatClient(
@@ -145,7 +154,7 @@ def build_agent(kb_tool):
         client=client,
         name="study-assistant",
         instructions=_SYSTEM_PROMPT,
-        tools=[kb_tool, *TASK_TOOLS],
+        tools=[kb_tool, *TASK_TOOLS, *PREFERENCE_TOOLS],
     )
 
 

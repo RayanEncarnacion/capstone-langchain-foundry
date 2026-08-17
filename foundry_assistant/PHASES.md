@@ -59,3 +59,18 @@ Finish when
 - The agent selects the right tool.
 - The model cannot select another user's partition.
 - Invalid arguments are rejected inside the tool.
+
+## Phase 6 — Session and long-term memory
+
+Build
+- Use AgentSession for current conversation state.
+- Add one cross-session preference using a Foundry Memory Store.
+- Scope memory to a stable authenticated user identifier.
+- If managed memory is unavailable, implement the same behavior with a Cosmos-backed ContextProvider.
+
+Status: Foundry managed memory is currently preview.
+
+Finish when
+- Conversation history remains session-specific.
+- An explicit preference survives a new session.
+- The user can inspect and delete remembered preferences.
