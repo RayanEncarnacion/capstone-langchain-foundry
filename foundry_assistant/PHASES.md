@@ -43,3 +43,19 @@ Finish when
 - The agent calls the knowledge-base tool for grounded questions.
 - Answers contain useful citations.
 - Out-of-scope questions produce an abstention.
+
+## Phase 5 — Local Cosmos DB tools
+
+Build
+- Add list_tasks, create_task and complete_task.
+- Describe tool parameters with Python annotations and Pydantic fields.
+- Inject authenticated user identity through runtime context.
+- Hide identity and partition information from the model-visible schema.
+
+Tools
+- Agent Framework @tool, invocation context, Azure Cosmos DB SDK.
+
+Finish when
+- The agent selects the right tool.
+- The model cannot select another user's partition.
+- Invalid arguments are rejected inside the tool.
