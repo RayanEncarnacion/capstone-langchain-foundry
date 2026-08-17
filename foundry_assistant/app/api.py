@@ -1,11 +1,10 @@
-"""FastAPI app — Phase 1 Foundry baseline.
+"""FastAPI app — Phase 2 Foundry agent with session reuse.
 
 Endpoints:
     GET  /health  — unauthenticated liveness check
-    POST /chat    — one turn with the Foundry agent
+    POST /chat    — one turn with the Foundry agent, on a reused AgentSession
 """
 
-import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -36,19 +35,23 @@ def health() -> dict:
 async def chat(
     request: ChatRequest
 ) -> ChatResponse:
-    """Send one message to the Foundry agent. Requires a valid bearer token."""
-    thread_id = request.thread_id or str(uuid.uuid4())
+    """Send one message to the Foundry agent on a reused AgentSession.
 
+    Omit thread_id to start a new session; pass a returned session_id to
+    continue the same conversation with context.
+    """
     try:
-        print(f"Request: user={request.user_id} thread={thread_id} msg={request.message}")
-        reply, tool_calls = await run_agent(_agent, request.message)
+        print(f"Request: thread={request.thread_id} msg={request.message}")
+        session_id, reply, tool_calls = await run_agent(
+            _agent, request.message, thread_id=request.thread_id
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=502, detail=f"Agent call failed: {exc}"
         ) from exc
 
     return ChatResponse(
-        session_id=thread_id,
+        session_id=session_id,
         message=reply or "(no content)",
         tool_calls=[ToolCall(name=c["name"], args=c["args"]) for c in tool_calls],
     )

@@ -1,30 +1,48 @@
-"""Request / response schemas for the Foundry assistant API."""
+"""Request / response schemas for the Foundry assistant API.
+
+Phase 2 — the response shape is copied from langchain_assistant/app/schemas.py
+so both projects return the same JSON contract. Identity comes from the token,
+not the body, so there is no user_id field on the request.
+"""
 
 from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    """POST /chat input. No user_id field — identity comes from the token."""
+    """POST /chat input. Identity comes from the token, not the body."""
 
-    message: str = Field(..., min_length=1, description="User message")
-    user_id: str = Field(..., min_length=1, description="User ID")
+    message: str = Field(..., min_length=1, description="User message to send to the model")
     thread_id: str | None = Field(
-        default=None, description="Thread to continue; omit to start a new one"
+        default=None, description="Session to continue; omit to start a new one"
     )
 
 
 class ToolCall(BaseModel):
-    """A single tool the agent invoked during a turn."""
+    """A single tool the agent invoked during a turn (for transparency)."""
 
-    name: str = Field(..., description="Tool name")
-    args: dict = Field(default_factory=dict, description="Arguments passed")
+    name: str = Field(..., description="Tool name that was called")
+    args: dict = Field(default_factory=dict, description="Arguments passed to the tool")
+
+
+class PendingApproval(BaseModel):
+    """A write action that is paused awaiting human approval."""
+
+    name: str = Field(..., description="Tool the agent wants to run")
+    args: dict = Field(default_factory=dict, description="Arguments the tool would run with")
+    description: str = Field(default="", description="Human-readable review prompt")
 
 
 class ChatResponse(BaseModel):
-    """POST /chat output."""
+    """POST /chat output. Same contract as the LangChain implementation."""
 
-    session_id: str = Field(..., min_length=1, description="Session / thread id")
+    session_id: str = Field(..., min_length=1, description="Session identifier")
     message: str = Field(..., min_length=1, description="Model reply text")
     tool_calls: list[ToolCall] = Field(
-        default_factory=list, description="Tools invoked this turn"
+        default_factory=list, description="Tools the agent invoked this turn"
+    )
+    approval_required: bool = Field(
+        default=False, description="Run paused awaiting approval of a write tool"
+    )
+    pending: list[PendingApproval] = Field(
+        default_factory=list, description="Write actions awaiting approval"
     )

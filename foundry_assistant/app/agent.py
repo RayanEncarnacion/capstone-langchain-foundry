@@ -1,8 +1,12 @@
 """Foundry agent: FoundryChatClient + Microsoft Agent Framework.
 
-Phase 1 — baseline. Calls the Foundry project endpoint via the Responses
-API. No tools yet; just prove the model responds through a local FastAPI
-endpoint.
+Phase 2 — agent, session and response schema. Builds an ephemeral Agent
+Framework Agent (no hosted/persisted agent) and reuses an AgentSession per
+thread so follow-up turns keep conversation context. Sessions live in an
+in-memory dict keyed by session_id; they are lost on restart by design.
+
+The agent definition (instructions + construction) is versioned with this
+source file.
 
 Environment variables (from .env):
     FOUNDRY_PROJECT_ENDPOINT  — project-scoped endpoint URL
@@ -10,6 +14,7 @@ Environment variables (from .env):
 """
 
 import os
+import uuid
 
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
@@ -48,7 +53,7 @@ _SYSTEM_PROMPT = (
 
 
 def build_agent():
-    """Construct the Agent Framework agent backed by FoundryChatClient.
+    """Construct the ephemeral Agent Framework agent backed by FoundryChatClient.
 
     Returns an Agent instance (async — call with `await agent.run(...)`).
     """
@@ -68,9 +73,37 @@ def build_agent():
     )
 
 
-async def run_agent(agent, message: str) -> tuple[str, list[dict]]:
-    """Run one user turn. Returns (reply_text, tool_calls)."""
-    result = await agent.run(message)
+# In-memory session store: session_id -> AgentSession. Ephemeral by design;
+# reused across turns so a follow-up on the same thread keeps context, and
+# cleared on process restart.
+_sessions: dict = {}
+
+
+def get_or_create_session(agent, thread_id: str | None):
+    """Resolve the AgentSession for a thread, creating one if needed.
+
+    Returns (session, session_id). A follow-up only carries context when the
+    same session_id is supplied and its AgentSession is still cached.
+    """
+    if thread_id and thread_id in _sessions:
+        return _sessions[thread_id], thread_id
+
+    session = agent.create_session()
+    session_id = getattr(session, "session_id", None) or str(uuid.uuid4())
+    _sessions[session_id] = session
+    return session, session_id
+
+
+async def run_agent(
+    agent, message: str, thread_id: str | None = None
+) -> tuple[str, str, list[dict]]:
+    """Run one user turn on a reused session.
+
+    Returns (session_id, reply_text, tool_calls). Pass the returned session_id
+    back as thread_id on the next call to continue the same conversation.
+    """
+    session, session_id = get_or_create_session(agent, thread_id)
+    result = await agent.run(message, session=session)
 
     tool_calls: list[dict] = []
     for item in getattr(result, "tool_calls", None) or []:
@@ -79,5 +112,5 @@ async def run_agent(agent, message: str) -> tuple[str, list[dict]]:
             "args": getattr(item, "args", {}),
         })
 
-    text = str(result) if result else "(no content)"
-    return text, tool_calls
+    text = getattr(result, "text", None) or (str(result) if result else "(no content)")
+    return session_id, text, tool_calls
