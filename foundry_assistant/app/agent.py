@@ -70,16 +70,23 @@ _credential = DefaultAzureCredential()
 
 _SYSTEM_PROMPT = (
     "You are a study assistant for the Northstar learning program. "
-    "You must ground every answer in the knowledge base. For any question "
-    "that could be answered from the notes, call the "
-    f"`{KB_RETRIEVE_TOOL}` tool first, then answer using only the returned "
-    "passages. Cite the sources you used with bracketed markers like [1], "
-    "[2] and list the corresponding source titles/ids at the end under a "
-    "'Sources:' line. "
-    "If retrieval returns nothing relevant, or the question is outside the "
-    "knowledge base, do not guess: reply exactly with 'I don't have "
-    "information on that in my knowledge base.' Never answer from prior "
-    "knowledge when the tool returns no supporting passages."
+    "You have two kinds of tools: knowledge-base retrieval and task "
+    "management. Choose based on what the user asks. "
+    "KNOWLEDGE QUESTIONS: for anything that could be answered from the study "
+    f"notes, call the `{KB_RETRIEVE_TOOL}` tool first, then answer using only "
+    "the returned passages. Cite the sources you used with bracketed markers "
+    "like [1], [2] and list the corresponding source titles/ids at the end "
+    "under a 'Sources:' line. If retrieval returns nothing relevant, or the "
+    "question is outside the knowledge base, do not guess: reply exactly with "
+    "'I don't have information on that in my knowledge base.' Never answer "
+    "from prior knowledge when the tool returns no supporting passages. "
+    "TASK REQUESTS: when the user wants to see, add, or complete to-dos, use "
+    "the task tools — `list_tasks` to read them, `create_task` to add one, and "
+    "`complete_task` to mark one done. These tools always operate on the "
+    "authenticated user's own tasks; you cannot see or choose another user's "
+    "tasks, so never ask for or accept a user id as an argument. When a tool "
+    "returns {\"ok\": false, ...}, tell the user what went wrong instead of "
+    "inventing a result."
 )
 
 
@@ -119,11 +126,14 @@ def build_kb_tool():
 def build_agent(kb_tool):
     """Construct the ephemeral Agent Framework agent backed by FoundryChatClient.
 
-    `kb_tool` is the connected knowledge base MCP tool. Returns an Agent
-    instance (async — call with `await agent.run(...)`).
+    `kb_tool` is the connected knowledge base MCP tool. The agent also binds the
+    Cosmos-backed task tools (list/create/complete). Returns an Agent instance
+    (async — call with `await agent.run(...)`).
     """
     from agent_framework import Agent
     from agent_framework.foundry import FoundryChatClient
+
+    from .tools import TASK_TOOLS
 
     client = FoundryChatClient(
         project_endpoint=settings.project_endpoint,
@@ -135,7 +145,7 @@ def build_agent(kb_tool):
         client=client,
         name="study-assistant",
         instructions=_SYSTEM_PROMPT,
-        tools=[kb_tool],
+        tools=[kb_tool, *TASK_TOOLS],
     )
 
 
@@ -161,15 +171,23 @@ def get_or_create_session(agent, thread_id: str | None):
 
 
 async def run_agent(
-    agent, message: str, thread_id: str | None = None
+    agent, message: str, thread_id: str | None = None, user_id: str | None = None
 ) -> tuple[str, str, list[dict]]:
     """Run one user turn on a reused session.
+
+    `user_id` is the authenticated caller's id; it is injected into the tool
+    invocation context (never the model-visible schema) so task tools operate
+    on that user's Cosmos partition only.
 
     Returns (session_id, reply_text, tool_calls). Pass the returned session_id
     back as thread_id on the next call to continue the same conversation.
     """
     session, session_id = get_or_create_session(agent, thread_id)
-    result = await agent.run(message, session=session)
+    result = await agent.run(
+        message,
+        session=session,
+        function_invocation_kwargs={"user_id": user_id},
+    )
 
     tool_calls = _extract_tool_calls(result)
     text = getattr(result, "text", None) or (str(result) if result else "(no content)")

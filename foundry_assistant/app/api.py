@@ -7,9 +7,10 @@ Endpoints:
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 from .agent import build_agent, build_kb_tool, run_agent, settings
+from .auth import get_current_user
 from .schemas import ChatRequest, ChatResponse, ToolCall
 
 _agent = None
@@ -39,17 +40,20 @@ def health() -> dict:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(
-    request: ChatRequest
+    request: ChatRequest,
+    user_id: str = Depends(get_current_user),
 ) -> ChatResponse:
     """Send one message to the Foundry agent on a reused AgentSession.
 
-    Omit thread_id to start a new session; pass a returned session_id to
-    continue the same conversation with context.
+    Requires a valid Entra bearer token; the authenticated user id is injected
+    into the agent's tools so task operations stay scoped to that user. Omit
+    thread_id to start a new session; pass a returned session_id to continue
+    the same conversation with context.
     """
     try:
-        print(f"Request: thread={request.thread_id} msg={request.message}")
+        print(f"Request: user={user_id} thread={request.thread_id} msg={request.message}")
         session_id, reply, tool_calls = await run_agent(
-            _agent, request.message, thread_id=request.thread_id
+            _agent, request.message, thread_id=request.thread_id, user_id=user_id
         )
     except Exception as exc:
         raise HTTPException(
