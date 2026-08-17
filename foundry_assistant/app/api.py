@@ -9,18 +9,24 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from .agent import build_agent, run_agent, settings
+from .agent import build_agent, build_kb_tool, run_agent, settings
 from .schemas import ChatRequest, ChatResponse, ToolCall
 
 _agent = None
+_kb_tool = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _agent
+    global _agent, _kb_tool
     settings.require()
-    _agent = build_agent()
-    yield
+    _kb_tool = build_kb_tool()
+    await _kb_tool.connect()
+    _agent = build_agent(_kb_tool)
+    try:
+        yield
+    finally:
+        await _kb_tool.close()
 
 
 app = FastAPI(title="Capstone: Foundry Assistant", lifespan=lifespan)

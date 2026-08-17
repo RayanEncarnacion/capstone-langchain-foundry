@@ -25,6 +25,7 @@ dependencies = [
     "langchain-openai>=1.5.0",
     "langchain-text-splitters>=1.1.2",
     "langsmith>=0.2.0",
+    "mcp<2",
     "openinference-instrumentation-langchain>=0.1.29",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
