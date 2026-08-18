@@ -118,9 +118,12 @@ def build_kb_tool():
     """Construct the Foundry IQ knowledge base MCP tool (not yet connected).
 
     Restricts the exposed toolset to `knowledge_base_retrieve` only. The caller
-    is responsible for connecting the tool (see api.py lifespan).
+    is responsible for connecting the tool (see api.py lifespan). MCP output is
+    treated as untrusted and sanitized before entering the model context.
     """
     from agent_framework import MCPStreamableHTTPTool
+
+    from .sanitize import mcp_result_parser
 
     return MCPStreamableHTTPTool(
         name="foundry-iq-knowledge-base",
@@ -128,6 +131,7 @@ def build_kb_tool():
         allowed_tools=[KB_RETRIEVE_TOOL],
         header_provider=_kb_header_provider,
         approval_mode="never_require",
+        parse_tool_results=mcp_result_parser,
     )
 
 
@@ -163,6 +167,10 @@ def build_agent(kb_tool):
 # cleared on process restart.
 _sessions: dict = {}
 
+# Pending approval requests keyed by session_id. Stored when a run pauses on
+# an always_require tool so /approve can resume with the decision.
+_pending_approvals: dict[str, list] = {}
+
 
 def get_or_create_session(agent, thread_id: str | None):
     """Resolve the AgentSession for a thread, creating one if needed.
@@ -179,17 +187,53 @@ def get_or_create_session(agent, thread_id: str | None):
     return session, session_id
 
 
+def _summarize_result(result, session_id: str) -> tuple[str, str, list[dict], list[dict]]:
+    """Extract (session_id, reply, tool_calls, pending) from an AgentResponse.
+
+    When the response contains user_input_requests of type
+    function_approval_request, the run is paused: we stash the requests and
+    return them as `pending` so the API layer can surface them for approval.
+    """
+    tool_calls = _extract_tool_calls(result)
+
+    import json as _json
+
+    pending: list[dict] = []
+    approval_contents = getattr(result, "user_input_requests", None) or []
+    if approval_contents:
+        _pending_approvals[session_id] = approval_contents
+        for req in approval_contents:
+            fc = getattr(req, "function_call", None)
+            if fc:
+                args = getattr(fc, "arguments", None) or getattr(fc, "args", None) or {}
+                if isinstance(args, str):
+                    try:
+                        args = _json.loads(args)
+                    except (ValueError, TypeError):
+                        args = {"raw": args}
+                pending.append({
+                    "name": getattr(fc, "name", "unknown"),
+                    "args": args if isinstance(args, dict) else {},
+                    "description": f"Approval required to run {getattr(fc, 'name', 'unknown')}",
+                })
+        return session_id, "", tool_calls, pending
+
+    text = getattr(result, "text", None) or (str(result) if result else "(no content)")
+    return session_id, text, tool_calls, pending
+
+
 async def run_agent(
     agent, message: str, thread_id: str | None = None, user_id: str | None = None
-) -> tuple[str, str, list[dict]]:
+) -> tuple[str, str, list[dict], list[dict]]:
     """Run one user turn on a reused session.
 
     `user_id` is the authenticated caller's id; it is injected into the tool
     invocation context (never the model-visible schema) so task tools operate
     on that user's Cosmos partition only.
 
-    Returns (session_id, reply_text, tool_calls). Pass the returned session_id
-    back as thread_id on the next call to continue the same conversation.
+    Returns (session_id, reply_text, tool_calls, pending). When `pending` is
+    non-empty the run paused on an approval gate and needs a resume via
+    `resume_agent`.
     """
     session, session_id = get_or_create_session(agent, thread_id)
     result = await agent.run(
@@ -198,9 +242,40 @@ async def run_agent(
         function_invocation_kwargs={"user_id": user_id},
     )
 
-    tool_calls = _extract_tool_calls(result)
-    text = getattr(result, "text", None) or (str(result) if result else "(no content)")
-    return session_id, text, tool_calls
+    return _summarize_result(result, session_id)
+
+
+async def resume_agent(
+    agent, thread_id: str, user_id: str, approved: bool
+) -> tuple[str, str, list[dict], list[dict]]:
+    """Resume a paused run with a human approval decision.
+
+    Converts the stored approval requests into approval responses (approved or
+    rejected) and feeds them back into agent.run() on the same session so the
+    framework either executes or skips the pending tool call.
+    """
+    from agent_framework._types import Content
+
+    if thread_id not in _sessions:
+        raise ValueError(f"No session found for thread_id={thread_id!r}")
+    session = _sessions[thread_id]
+
+    pending_requests = _pending_approvals.pop(thread_id, [])
+    if not pending_requests:
+        raise ValueError("No pending approval requests for this session.")
+
+    approval_responses = [
+        req.to_function_approval_response(approved=approved)
+        for req in pending_requests
+    ]
+
+    result = await agent.run(
+        approval_responses,
+        session=session,
+        function_invocation_kwargs={"user_id": user_id},
+    )
+
+    return _summarize_result(result, thread_id)
 
 
 # Content `type` values that represent an outbound tool invocation. Agent

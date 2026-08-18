@@ -74,3 +74,19 @@ Finish when
 - Conversation history remains session-specific.
 - An explicit preference survives a new session.
 - The user can inspect and delete remembered preferences.
+
+## Phase 7 — Approval, authentication and safety
+
+Build
+- Set write tools to require approval.
+- Leave safe read-only tools automatic.
+- Protect FastAPI with the same Entra authentication used in the LangChain project.
+- Grant minimum roles to your development identity and the project identity.
+- Apply Foundry content filters and application-level tool validation.
+- Treat MCP and database tool outputs as untrusted input.
+
+Finish when
+- A task mutation does nothing until approved.
+- A wrong-audience or expired access token fails.
+- The MCP tool list is explicitly restricted.
+- Sensitive values are absent from prompts and tool schemas.

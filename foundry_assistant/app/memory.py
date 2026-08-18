@@ -285,7 +285,7 @@ def _user_id(ctx: FunctionInvocationContext) -> str:
 # ---------------------------------------------------------------------------
 # Preference tools (retrieval only when the user asks)
 # ---------------------------------------------------------------------------
-@tool(approval_mode="never_require")
+@tool(approval_mode="always_require")
 def remember_nickname(
     nickname: Annotated[
         str,
@@ -323,7 +323,7 @@ def get_my_preferences(*, ctx: FunctionInvocationContext) -> dict:
         return {"ok": False, "error": f"get_my_preferences failed: {exc}"}
 
 
-@tool(approval_mode="never_require")
+@tool(approval_mode="always_require")
 def forget_my_preferences(*, ctx: FunctionInvocationContext) -> dict:
     """Delete the current user's remembered preferences (nickname).
 

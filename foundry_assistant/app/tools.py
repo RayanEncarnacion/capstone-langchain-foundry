@@ -29,6 +29,8 @@ from typing import Annotated, Literal
 from agent_framework import FunctionInvocationContext, tool
 from pydantic import Field
 
+from .sanitize import sanitize_dict_output
+
 # Fallback partition key value when a run carries no authenticated user id.
 # In production every request is authenticated, so this only guards local
 # smoke tests that forget to inject identity.
@@ -85,7 +87,7 @@ def list_tasks(
                 partition_key=user_id,
             )
         )
-        return {"ok": True, "count": len(items), "tasks": items}
+        return sanitize_dict_output({"ok": True, "count": len(items), "tasks": items})
     except Exception as exc:
         return {"ok": False, "error": f"list_tasks failed: {exc}"}
 
@@ -93,7 +95,7 @@ def list_tasks(
 # ---------------------------------------------------------------------------
 # create_task
 # ---------------------------------------------------------------------------
-@tool(approval_mode="never_require")
+@tool(approval_mode="always_require")
 def create_task(
     title: Annotated[
         str, Field(min_length=1, description="Short task description")
@@ -136,7 +138,7 @@ def create_task(
         }
         container = get_tasks_container()
         created = container.create_item(body=item)
-        return {
+        return sanitize_dict_output({
             "ok": True,
             "task": {
                 "id": created["id"],
@@ -144,7 +146,7 @@ def create_task(
                 "status": created["status"],
                 "due_date": created.get("due_date"),
             },
-        }
+        })
     except Exception as exc:
         return {"ok": False, "error": f"create_task failed: {exc}"}
 
@@ -152,7 +154,7 @@ def create_task(
 # ---------------------------------------------------------------------------
 # complete_task
 # ---------------------------------------------------------------------------
-@tool(approval_mode="never_require")
+@tool(approval_mode="always_require")
 def complete_task(
     id: Annotated[
         str, Field(min_length=1, description="The id of the task to mark as done")
@@ -180,7 +182,7 @@ def complete_task(
 
         item["status"] = "done"
         updated = container.replace_item(item=id, body=item)
-        return {
+        return sanitize_dict_output({
             "ok": True,
             "task": {
                 "id": updated["id"],
@@ -188,7 +190,7 @@ def complete_task(
                 "status": updated["status"],
                 "due_date": updated.get("due_date"),
             },
-        }
+        })
     except Exception as exc:
         return {"ok": False, "error": f"complete_task failed: {exc}"}
 

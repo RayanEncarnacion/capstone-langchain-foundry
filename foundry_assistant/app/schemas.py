@@ -17,6 +17,13 @@ class ChatRequest(BaseModel):
     )
 
 
+class ApprovalRequest(BaseModel):
+    """POST /approve input. Resumes a paused run with a human decision."""
+
+    thread_id: str = Field(..., min_length=1, description="Session that is paused")
+    approved: bool = Field(..., description="True to execute the pending tool, False to reject")
+
+
 class ToolCall(BaseModel):
     """A single tool the agent invoked during a turn (for transparency)."""
 
