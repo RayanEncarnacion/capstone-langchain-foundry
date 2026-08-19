@@ -18,11 +18,37 @@ from .schemas import (
     ChatRequest,
     ChatResponse,
     PendingApproval,
+    TokenUsage,
     ToolCall,
 )
+from .tokens import TokenUsageBreakdown
+
+import os
 
 _agent = None
 _kb_tool = None
+_TELEMETRY_INITIALIZED = False
+
+
+def _setup_azure_telemetry() -> None:
+    """Configure Azure Monitor OpenTelemetry tracing at module import time."""
+    global _TELEMETRY_INITIALIZED
+    if _TELEMETRY_INITIALIZED:
+        return
+    conn_str = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+    if not conn_str:
+        return
+    try:
+        from azure.monitor.opentelemetry import configure_azure_monitor
+
+        configure_azure_monitor(connection_string=conn_str)
+        _TELEMETRY_INITIALIZED = True
+    except Exception as exc:
+        print(f"Azure Monitor initialization skipped: {exc}")
+
+
+# Initialize telemetry once on import
+_setup_azure_telemetry()
 
 
 @asynccontextmanager
@@ -36,7 +62,6 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await _kb_tool.close()
-
 
 app = FastAPI(title="Capstone: Foundry Assistant", lifespan=lifespan)
 
@@ -57,9 +82,15 @@ def _guard_input(text: str) -> None:
 
 
 def _build_response(
-    session_id: str, reply: str, tool_calls: list[dict], pending: list[dict]
+    session_id: str,
+    reply: str,
+    tool_calls: list[dict],
+    pending: list[dict],
+    breakdown: TokenUsageBreakdown | None = None,
 ) -> ChatResponse:
     """Shape agent output into a validated ChatResponse."""
+    usage_model = TokenUsage(**breakdown.to_dict()) if breakdown else None
+
     if pending:
         summary = "; ".join(f"{p['name']}({p['args']})" for p in pending)
         return ChatResponse(
@@ -73,6 +104,7 @@ def _build_response(
                 )
                 for p in pending
             ],
+            usage=usage_model,
         )
 
     verdict = screen_text(reply)
@@ -83,6 +115,7 @@ def _build_response(
         session_id=session_id,
         message=safe_reply or "(no content)",
         tool_calls=[ToolCall(name=c["name"], args=c["args"]) for c in tool_calls],
+        usage=usage_model,
     )
 
 
@@ -100,7 +133,7 @@ async def chat(
 
     try:
         print(f"Request: user={user_id} thread={request.thread_id} msg={request.message}")
-        session_id, reply, tool_calls, pending = await run_agent(
+        session_id, reply, tool_calls, pending, breakdown = await run_agent(
             _agent, request.message, thread_id=request.thread_id, user_id=user_id
         )
     except Exception as exc:
@@ -108,7 +141,7 @@ async def chat(
             status_code=502, detail=f"Agent call failed: {exc}"
         ) from exc
 
-    return _build_response(session_id, reply, tool_calls, pending)
+    return _build_response(session_id, reply, tool_calls, pending, breakdown)
 
 
 @app.post("/approve", response_model=ChatResponse)
@@ -126,7 +159,7 @@ async def approve(
             f"Approval: user={user_id} thread={request.thread_id} "
             f"approved={request.approved}"
         )
-        session_id, reply, tool_calls, pending = await resume_agent(
+        session_id, reply, tool_calls, pending, breakdown = await resume_agent(
             _agent, request.thread_id, user_id=user_id, approved=request.approved
         )
     except ValueError as exc:
@@ -134,4 +167,5 @@ async def approve(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Resume failed: {exc}") from exc
 
-    return _build_response(session_id, reply, tool_calls, pending)
+    return _build_response(session_id, reply, tool_calls, pending, breakdown)
+

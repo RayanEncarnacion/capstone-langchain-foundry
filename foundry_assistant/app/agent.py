@@ -24,7 +24,10 @@ import uuid
 from azure.identity import DefaultAzureCredential
 from dotenv import load_dotenv
 
+from .tokens import ContextBudgetManager, TokenUsageBreakdown
+
 load_dotenv()
+
 
 # Data-plane scope for the Azure AI Search knowledge base MCP endpoint.
 _DEFAULT_SEARCH_SCOPE = "https://search.azure.com/.default"
@@ -171,6 +174,9 @@ _sessions: dict = {}
 # an always_require tool so /approve can resume with the decision.
 _pending_approvals: dict[str, list] = {}
 
+# Context budget manager for enforcing token limits and stable prefix caching.
+_budget_manager = ContextBudgetManager()
+
 
 def get_or_create_session(agent, thread_id: str | None):
     """Resolve the AgentSession for a thread, creating one if needed.
@@ -185,6 +191,7 @@ def get_or_create_session(agent, thread_id: str | None):
     session_id = getattr(session, "session_id", None) or str(uuid.uuid4())
     _sessions[session_id] = session
     return session, session_id
+
 
 
 def _summarize_result(result, session_id: str) -> tuple[str, str, list[dict], list[dict]]:
@@ -222,38 +229,77 @@ def _summarize_result(result, session_id: str) -> tuple[str, str, list[dict], li
     return session_id, text, tool_calls, pending
 
 
+def _extract_retrieval_text(result) -> str:
+    """Extract retrieved knowledge base text from message contents if present."""
+    retrieval_chunks: list[str] = []
+    for msg in getattr(result, "messages", None) or []:
+        for content in getattr(msg, "contents", None) or []:
+            # MCP knowledge base results or tool responses
+            if getattr(content, "name", "") == KB_RETRIEVE_TOOL:
+                txt = getattr(content, "text", "") or str(getattr(content, "result", ""))
+                if txt:
+                    retrieval_chunks.append(txt)
+    return "\n".join(retrieval_chunks)
+
+
 async def run_agent(
     agent, message: str, thread_id: str | None = None, user_id: str | None = None
-) -> tuple[str, str, list[dict], list[dict]]:
-    """Run one user turn on a reused session.
+) -> tuple[str, str, list[dict], list[dict], TokenUsageBreakdown]:
+    """Run one user turn on a reused session with context budgeting.
 
     `user_id` is the authenticated caller's id; it is injected into the tool
     invocation context (never the model-visible schema) so task tools operate
     on that user's Cosmos partition only.
 
-    Returns (session_id, reply_text, tool_calls, pending). When `pending` is
+    Returns (session_id, reply_text, tool_calls, pending, token_usage). When `pending` is
     non-empty the run paused on an approval gate and needs a resume via
     `resume_agent`.
     """
+    from agent_framework import SlidingWindowStrategy
+
     session, session_id = get_or_create_session(agent, thread_id)
+    compaction = SlidingWindowStrategy(
+        keep_last_groups=_budget_manager.config.keep_last_turns,
+        preserve_system=True,
+    )
+
     result = await agent.run(
         message,
         session=session,
+        compaction_strategy=compaction,
         function_invocation_kwargs={"user_id": user_id},
     )
 
-    return _summarize_result(result, session_id)
+    session_id, reply, tool_calls, pending = _summarize_result(result, session_id)
+
+    # Calculate token breakdown metrics
+    retrieval_text = _extract_retrieval_text(result)
+    history_msgs = getattr(result, "messages", None) or []
+    breakdown = _budget_manager.calculate_breakdown(
+        system_prompt=_SYSTEM_PROMPT,
+        tools=getattr(agent, "tools", None),
+        history_messages=history_msgs,
+        retrieval_content=retrieval_text,
+        user_message=message,
+        model_output=reply,
+        usage_details=getattr(result, "usage_details", None),
+        model=settings.model or "o200k_base",
+    )
+    breakdown.log_breakdown()
+
+    return session_id, reply, tool_calls, pending, breakdown
 
 
 async def resume_agent(
     agent, thread_id: str, user_id: str, approved: bool
-) -> tuple[str, str, list[dict], list[dict]]:
+) -> tuple[str, str, list[dict], list[dict], TokenUsageBreakdown]:
     """Resume a paused run with a human approval decision.
 
     Converts the stored approval requests into approval responses (approved or
     rejected) and feeds them back into agent.run() on the same session so the
     framework either executes or skips the pending tool call.
     """
+    from agent_framework import SlidingWindowStrategy
     from agent_framework._types import Content
 
     if thread_id not in _sessions:
@@ -269,13 +315,35 @@ async def resume_agent(
         for req in pending_requests
     ]
 
+    compaction = SlidingWindowStrategy(
+        keep_last_groups=_budget_manager.config.keep_last_turns,
+        preserve_system=True,
+    )
+
     result = await agent.run(
         approval_responses,
         session=session,
+        compaction_strategy=compaction,
         function_invocation_kwargs={"user_id": user_id},
     )
 
-    return _summarize_result(result, thread_id)
+    session_id, reply, tool_calls, pending = _summarize_result(result, thread_id)
+
+    retrieval_text = _extract_retrieval_text(result)
+    breakdown = _budget_manager.calculate_breakdown(
+        system_prompt=_SYSTEM_PROMPT,
+        tools=getattr(agent, "tools", None),
+        history_messages=getattr(result, "messages", None) or [],
+        retrieval_content=retrieval_text,
+        user_message="[Approval Decision]",
+        model_output=reply,
+        usage_details=getattr(result, "usage_details", None),
+        model=settings.model or "o200k_base",
+    )
+    breakdown.log_breakdown()
+
+    return session_id, reply, tool_calls, pending, breakdown
+
 
 
 # Content `type` values that represent an outbound tool invocation. Agent
