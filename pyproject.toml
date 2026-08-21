@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "agent-framework-foundry>=1.10.0",
+    "agent-framework-openai>=1.10.0",
     "azure-ai-contentsafety>=1.0.0",
     "azure-cosmos>=4.16.3",
     "azure-identity>=1.25.3",
@@ -27,6 +28,7 @@ dependencies = [
     "langsmith>=0.2.0",
     "mcp<2",
     "openinference-instrumentation-langchain>=0.1.29",
+    "opentelemetry-api>=1.38.0",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
     "python-jose[cryptography]>=3.3.0",

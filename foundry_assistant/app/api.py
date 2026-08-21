@@ -1,22 +1,34 @@
 """FastAPI app — Foundry agent with session reuse and approval gates.
 
 Endpoints:
-    GET  /health   — unauthenticated liveness check
-    POST /chat     — one turn with the Foundry agent, on a reused AgentSession
-    POST /approve  — resume a paused run with a human approve/reject decision
+    GET  /health              — unauthenticated liveness check
+    POST /chat                — one turn with the Foundry agent
+    POST /approve             — resume a paused approval
+    GET  /context/{thread_id} — inspect owner-scoped model context
 """
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from opentelemetry import trace
 
-from .agent import build_agent, build_kb_tool, resume_agent, run_agent, settings
+from .agent import (
+    AgentSessionError,
+    build_agent,
+    build_kb_tool,
+    inspect_model_context,
+    resume_agent,
+    run_agent,
+    settings,
+)
 from .auth import get_current_user
 from .content_safety import screen_text
+from .gateway import CORRELATION_HEADER, correlation_id, rate_limit_retry_after
 from .schemas import (
     ApprovalRequest,
     ChatRequest,
     ChatResponse,
+    ContextInspectionResponse,
     PendingApproval,
     TokenUsage,
     ToolCall,
@@ -64,6 +76,20 @@ async def lifespan(app: FastAPI):
         await _kb_tool.close()
 
 app = FastAPI(title="Capstone: Foundry Assistant", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def correlate_request(request: Request, call_next):
+    """Propagate one safe opaque ID through app, APIM, and response telemetry."""
+
+    request_id = correlation_id(request.headers.get(CORRELATION_HEADER))
+    request.state.correlation_id = request_id
+    span = trace.get_current_span()
+    if span.is_recording():
+        span.set_attribute("app.correlation_id", request_id)
+    response = await call_next(request)
+    response.headers[CORRELATION_HEADER] = request_id
+    return response
 
 
 @app.get("/health")
@@ -119,9 +145,27 @@ def _build_response(
     )
 
 
+def _raise_model_error(exc: Exception, request_id: str, operation: str) -> None:
+    """Map gateway throttling and avoid reflecting SDK errors or secrets."""
+
+    throttled, retry_after = rate_limit_retry_after(exc)
+    if throttled:
+        headers = {"Retry-After": retry_after} if retry_after else None
+        raise HTTPException(
+            status_code=429,
+            detail="Model gateway rate limit exceeded; retry later.",
+            headers=headers,
+        ) from exc
+    raise HTTPException(
+        status_code=502,
+        detail=f"{operation} failed; correlation_id={request_id}",
+    ) from exc
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(
-    request: ChatRequest,
+    request: Request,
+    payload: ChatRequest,
     user_id: str = Depends(get_current_user),
 ) -> ChatResponse:
     """Send one message to the Foundry agent on a reused AgentSession.
@@ -129,24 +173,46 @@ async def chat(
     Requires a valid Entra bearer token; the authenticated user id is injected
     into the agent's tools so task operations stay scoped to that user.
     """
-    _guard_input(request.message)
+    _guard_input(payload.message)
+    request_id = request.state.correlation_id
 
     try:
-        print(f"Request: user={user_id} thread={request.thread_id} msg={request.message}")
+        print(f"Request: correlation_id={request_id} thread={payload.thread_id}")
         session_id, reply, tool_calls, pending, breakdown = await run_agent(
-            _agent, request.message, thread_id=request.thread_id, user_id=user_id
+            _agent,
+            payload.message,
+            thread_id=payload.thread_id,
+            user_id=user_id,
+            correlation_id=request_id,
+            allow_semantic_cache=payload.allow_semantic_cache,
         )
+    except AgentSessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Agent call failed: {exc}"
-        ) from exc
+        _raise_model_error(exc, request_id, "Agent call")
 
     return _build_response(session_id, reply, tool_calls, pending, breakdown)
 
 
+@app.get("/context/{thread_id}", response_model=ContextInspectionResponse)
+def inspect_context(
+    thread_id: str,
+    user_id: str = Depends(get_current_user),
+) -> ContextInspectionResponse:
+    """Inspect exact/redacted model calls for caller's own in-memory session."""
+
+    try:
+        return ContextInspectionResponse(
+            **inspect_model_context(thread_id=thread_id, user_id=user_id)
+        )
+    except AgentSessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/approve", response_model=ChatResponse)
 async def approve(
-    request: ApprovalRequest,
+    request: Request,
+    payload: ApprovalRequest,
     user_id: str = Depends(get_current_user),
 ) -> ChatResponse:
     """Resume a paused run with an approve/reject decision for a write tool.
@@ -154,18 +220,23 @@ async def approve(
     Requires a valid bearer token. The decision is applied to the caller's own
     thread; identity still comes from the token, not the body.
     """
+    request_id = request.state.correlation_id
     try:
         print(
-            f"Approval: user={user_id} thread={request.thread_id} "
-            f"approved={request.approved}"
+            f"Approval: correlation_id={request_id} thread={payload.thread_id} "
+            f"approved={payload.approved}"
         )
         session_id, reply, tool_calls, pending, breakdown = await resume_agent(
-            _agent, request.thread_id, user_id=user_id, approved=request.approved
+            _agent,
+            payload.thread_id,
+            user_id=user_id,
+            approved=payload.approved,
+            correlation_id=request_id,
         )
-    except ValueError as exc:
+    except AgentSessionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Resume failed: {exc}") from exc
+        _raise_model_error(exc, request_id, "Resume")
 
     return _build_response(session_id, reply, tool_calls, pending, breakdown)
 

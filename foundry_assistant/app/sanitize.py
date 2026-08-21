@@ -8,6 +8,9 @@ output enters the model context.
 
 import json
 import re
+from typing import Any
+
+from .tokens import count_tokens
 
 _MAX_TOOL_OUTPUT_CHARS = 8000
 
@@ -55,5 +58,75 @@ def mcp_result_parser(result) -> str:
         text = getattr(content, "text", None)
         if text:
             parts.append(text)
-    raw = "\n".join(parts) if parts else str(result)
-    return sanitize_tool_output(raw)
+    # The MCP content list commonly maps one item to one retrieved passage.
+    # Cap it here, then cap again in function middleware after framework
+    # normalization. Double enforcement keeps provider-shape changes bounded.
+    from .context_engineering import context_policy
+
+    raw: Any = parts if parts else str(result)
+    return compress_retrieval_output(
+        raw,
+        max_chunks=context_policy.max_retrieval_chunks,
+        max_tokens=context_policy.max_retrieval_tokens,
+    )
+
+
+def _limit_collections(value: Any, max_items: int) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _limit_collections(child, max_items)
+            for key, child in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_limit_collections(child, max_items) for child in value[:max_items]]
+    return value
+
+
+def _token_bounded_text(value: Any, max_tokens: int) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    sanitized = sanitize_tool_output(text, max_chars=max_tokens * 4)
+    if count_tokens(sanitized) <= max_tokens:
+        return sanitized
+    return sanitized[: max(1, max_tokens * 3)].rstrip() + "... [token truncated]"
+
+
+def compress_tool_output(value: Any, *, max_items: int, max_tokens: int) -> Any:
+    """Return a small, sanitized tool result while keeping structured data when possible."""
+
+    limited = _limit_collections(value, max_items)
+    if isinstance(limited, dict):
+        cleaned = sanitize_dict_output(limited, max_chars=max_tokens * 4)
+        if count_tokens(cleaned) <= max_tokens:
+            return cleaned
+        return {
+            "ok": cleaned.get("ok", True),
+            "compressed": True,
+            "preview": _token_bounded_text(cleaned, max_tokens),
+        }
+    if isinstance(limited, list):
+        serialized = _token_bounded_text(limited, max_tokens)
+        try:
+            return json.loads(serialized)
+        except (json.JSONDecodeError, TypeError):
+            return {"compressed": True, "preview": serialized}
+    return _token_bounded_text(limited, max_tokens)
+
+
+def compress_retrieval_output(
+    value: Any, *, max_chunks: int, max_tokens: int
+) -> str:
+    """Keep at most top-K retrieval items and a strict token budget."""
+
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            # Shape is unknown: token-bound it, but do not guess paragraph
+            # boundaries because trailing citation metadata may be essential.
+            parsed = value
+    limited = _limit_collections(parsed, max_chunks)
+    return _token_bounded_text(limited, max_tokens)

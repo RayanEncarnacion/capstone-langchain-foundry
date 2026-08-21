@@ -55,7 +55,7 @@ class MemorySettings:
         # .../api/projects/<project> endpoint — not the resource-level endpoint
         # the FoundryChatClient uses. Prefer an explicit override; else derive
         # from FOUNDRY_PROJECT_ENDPOINT + MEMORY_PROJECT_NAME when needed.
-        self.project_endpoint = os.environ.get("MEMORY_PROJECT_ENDPOINT")
+        self.project_endpoint = os.environ.get("FOUNDRY_PROJECT_SUFFIXED_ENDPOINT")
         self.project_name = os.environ.get("MEMORY_PROJECT_NAME")
         # auto (default) probes Foundry then falls back to Cosmos.
         self.backend = os.environ.get("PREFERENCE_BACKEND", "auto").lower()
@@ -96,7 +96,7 @@ class FoundryPreferenceStore:
     def _resolve_endpoint(foundry_endpoint: str | None) -> str | None:
         """Return the project-scoped endpoint the memory stores API requires.
 
-        Precedence: explicit MEMORY_PROJECT_ENDPOINT > FOUNDRY_PROJECT_ENDPOINT
+        Precedence: explicit FOUNDRY_PROJECT_SUFFIXED_ENDPOINT > FOUNDRY_PROJECT_ENDPOINT
         already containing '/api/projects/' > FOUNDRY_PROJECT_ENDPOINT joined
         with MEMORY_PROJECT_NAME. The chat client's resource-level endpoint is
         left untouched.

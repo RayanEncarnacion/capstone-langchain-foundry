@@ -15,6 +15,13 @@ class ChatRequest(BaseModel):
     thread_id: str | None = Field(
         default=None, description="Session to continue; omit to start a new one"
     )
+    allow_semantic_cache: bool = Field(
+        default=False,
+        description=(
+            "Opt in only for non-personalized, read-only questions; action and "
+            "stateful requests must leave this false"
+        ),
+    )
 
 
 class ApprovalRequest(BaseModel):
@@ -69,5 +76,17 @@ class ChatResponse(BaseModel):
     )
     usage: TokenUsage | None = Field(
         default=None, description="Detailed token usage metrics for this turn"
+    )
+
+
+class ContextInspectionResponse(BaseModel):
+    """Owner-scoped snapshots of context sent on model calls for one session."""
+
+    session_id: str = Field(..., min_length=1)
+    inspection_mode: str = Field(..., pattern="^(redacted|full)$")
+    latest: dict = Field(..., description="Most recent assembled model context")
+    calls: list[dict] = Field(
+        default_factory=list,
+        description="Bounded model-call history, including tool-loop calls",
     )
 
